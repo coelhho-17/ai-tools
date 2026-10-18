@@ -1,0 +1,142 @@
+diff --git a/hermes_cli/cli_status_bar_mixin.py b/hermes_cli/cli_status_bar_mixin.py
+index 67aac0e126..ab993e7fd1 100644
+--- a/hermes_cli/cli_status_bar_mixin.py
++++ b/hermes_cli/cli_status_bar_mixin.py
+@@ -24,6 +24,7 @@ _AGENT_COUNTERS = (
+     "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
+     "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
+     "session_total_tokens", "session_api_calls")
++_BALANCE_TTL_SECONDS = 300  # DeepSeek balance: refresh interval (fetch runs off the render loop)
+ 
+ 
+ def _threshold_style(value, ladder, fallback: str) -> str:
+@@ -232,7 +233,9 @@ class CLIStatusBarMixin:
+             "git_branch": "",
+             "goal_active": False,
+             "goal_turns_used": 0,
+-            "goal_max_turns": 0}
++            "goal_max_turns": 0,
++            "session_estimated_cost_usd": 0.0,
++            "session_cost_status": "unknown"}
+ 
+         try:
+             from hermes_cli.focus_view import focus_statusbar_segment
+@@ -301,6 +304,13 @@ class CLIStatusBarMixin:
+         for key in _AGENT_COUNTERS:
+             snapshot[key] = getattr(agent, key, 0) or 0
+ 
++        # Session $ cost (estimated). DeepSeek and other providers that don't return a
++        # billed cost in the API still accumulate an estimate here (see agent.turn_usage).
++        snapshot["session_estimated_cost_usd"] = float(
++            getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
++        snapshot["session_cost_status"] = (
++            getattr(agent, "session_cost_status", "unknown") or "unknown")
++
+         compressor = getattr(agent, "context_compressor", None)
+         if compressor:
+             # last_prompt_tokens parks at the -1 sentinel right after a compression until the
+@@ -1014,6 +1024,82 @@ class CLIStatusBarMixin:
+         self._status_bar_field_set_cache = result
+         return result
+ 
++    def _status_bar_show_cost(self) -> bool:
++        """Whether ``display.show_cost`` is on. This is a top-level display flag, not a
++        ``status_bar.fields`` entry, so it survives an explicit fields list."""
++        if hasattr(self, "_status_bar_show_cost_cache"):
++            return self._status_bar_show_cost_cache
++        result = False
++        try:
++            from cli import CLI_CONFIG
++            display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
++            result = bool((display or {}).get("show_cost"))
++        except Exception:
++            result = False
++        self._status_bar_show_cost_cache = result
++        return result
++
++    def _status_bar_is_deepseek(self) -> bool:
++        """True only when the active provider is DeepSeek's native endpoint — the only
++        provider whose ``/user/balance`` endpoint we know how to read."""
++        agent = getattr(self, "agent", None)
++        provider = (getattr(agent, "provider", "") or "").lower()
++        base_url = (getattr(agent, "base_url", "") or "").lower()
++        return provider == "deepseek" or "api.deepseek.com" in base_url
++
++    def _status_bar_balance(self) -> str:
++        """DeepSeek account balance (remaining, USD), cached ~5 min and fetched in a
++        background thread so the render loop never blocks. Returns "" when unavailable."""
++        if not self._status_bar_is_deepseek():
++            return ""
++        cache = getattr(self, "_status_bar_balance_cache", None)
++        now = time.monotonic()
++        if cache is not None and (now - cache[0]) < _BALANCE_TTL_SECONDS:
++            return cache[1]
++        if not getattr(self, "_status_bar_balance_fetching", False):
++            self._status_bar_balance_fetching = True
++            try:
++                threading.Thread(target=self._status_bar_balance_fetch, daemon=True).start()
++            except Exception:
++                self._status_bar_balance_fetching = False
++        return cache[1] if cache is not None else ""
++
++    def _status_bar_balance_fetch(self) -> None:
++        """Background fetch of the DeepSeek balance; never raises. Failure caches an empty
++        value too, so a dead network doesn't retry on every render (retries after the TTL)."""
++        value = ""
++        try:
++            agent = getattr(self, "agent", None)
++            key = getattr(agent, "api_key", "") if agent is not None else ""
++            value = self._status_bar_balance_usd(key) if isinstance(key, str) and key else ""
++        except Exception:
++            value = ""
++        finally:
++            try:
++                self._status_bar_balance_cache = (time.monotonic(), value)
++            finally:
++                self._status_bar_balance_fetching = False
++
++    def _status_bar_balance_usd(self, api_key: str) -> str:
++        """GET /user/balance for the key, returning a compact ``$X.XX`` label or ""."""
++        import json
++        import urllib.request
++        req = urllib.request.Request(
++            "https://api.deepseek.com/user/balance",
++            headers={"Authorization": "Bearer " + api_key, "Accept": "application/json"},
++        )
++        with urllib.request.urlopen(req, timeout=5) as resp:
++            data = json.loads(resp.read().decode("utf-8"))
++        if not data.get("is_available"):
++            return ""
++        for info in data.get("balance_infos", []):
++            try:
++                total = float(info.get("total_balance", 0.0))
++            except (TypeError, ValueError):
++                continue
++            return f"${total:.2f}"
++        return ""
++
+     def _status_bar_segments(
+         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
+         """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
+@@ -1045,6 +1131,21 @@ class CLIStatusBarMixin:
+             else:
+                 segs.append([("", f"☤ {model_short}")])
+         narrow, wide = width < 52, width >= 76
++        # Session $ cost (estimated) + account balance — shown when display.show_cost is on.
++        # Placed right after the model (before context) so the far-right session-title badge
++        # never trims these off on narrower terminals (the badge trims fragments left-to-right).
++        if not narrow and self._status_bar_show_cost():
++            _est = float(snapshot.get("session_estimated_cost_usd", 0.0) or 0.0)
++            if _est > 0:
++                try:
++                    from agent.usage_pricing import format_cost_label
++                    from decimal import Decimal
++                    segs.append([(_STRONG, format_cost_label(Decimal(str(_est))))])
++                except Exception:
++                    segs.append([(_STRONG, f"${_est:.4f}")])
++            _balance = self._status_bar_balance()
++            if _balance:
++                segs.append([(_DIM, f"💰 {_balance}")])
+         if narrow:
+             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
+             add("duration", _DIM, duration_label)

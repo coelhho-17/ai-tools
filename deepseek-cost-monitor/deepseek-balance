@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# deepseek-balance — current DeepSeek account balance via the public API (GET /user/balance).
+# Reads the key from the Hermes .env; never prints the key.
+# DeepSeek does NOT expose account cost / request count / token count via API — only balance.
+# Those totals live on platform.deepseek.com. "Estimated cost" derives: (total topped up) - (balance).
+# Adjust the topped-up total with env DEEPSEEK_TOPUP_TOTAL (default 10.00 = initial $10 top-up).
+set -u
+
+ENV_FILE="${HERMES_HOME:-$HOME/AppData/Local/hermes}/.env"
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/.hermes/.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "error: .env not found (tried $ENV_FILE)"
+  exit 1
+fi
+
+KEY="$(grep -E '^DEEPSEEK_API_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')"
+if [ -z "$KEY" ]; then
+  echo "error: DEEPSEEK_API_KEY not set in $ENV_FILE"
+  exit 1
+fi
+
+RESP="$(curl -s --max-time 15 https://api.deepseek.com/user/balance -H "Authorization: Bearer $KEY" -H "Accept: application/json")"
+if [ -z "$RESP" ]; then
+  echo "error: no response from the DeepSeek API (network?)"
+  exit 1
+fi
+
+RESP="$RESP" TOPUP="${DEEPSEEK_TOPUP_TOTAL:-10.00}" python - <<'PY'
+import os, sys, json
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    print("error: non-JSON response"); sys.exit(1)
+if not d.get("is_available"):
+    print("balance unavailable"); sys.exit(1)
+for b in d.get("balance_infos", []):
+    cur = b.get("currency", "?")
+    print("DeepSeek {} | balance: ${} | granted: ${} | topped-up: ${}".format(
+        cur, b.get("total_balance", "?"),
+        b.get("granted_balance", "?"), b.get("topped_up_balance", "?")))
+    try:
+        bal = float(b.get("total_balance", 0))
+        topup = float(os.environ.get("TOPUP", 0))
+    except (TypeError, ValueError):
+        continue
+    if topup > 0:
+        print("estimated cost (top-up ${:.2f}): ${:.2f}".format(topup, max(0.0, topup - bal)))
+PY
