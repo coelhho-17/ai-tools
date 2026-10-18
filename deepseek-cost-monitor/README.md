@@ -1,5 +1,8 @@
 # Hermes + DeepSeek: session cost & account balance in the status bar
 
+<img width="1237" height="77" alt="image" src="https://github.com/user-attachments/assets/55ce11f0-2bff-45e6-8a17-13c44e5917db" />
+
+
 Two segments added to the classic CLI status bar, gated behind the existing
 `display.show_cost` flag:
 
