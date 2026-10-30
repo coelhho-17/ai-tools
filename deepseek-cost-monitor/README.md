@@ -79,7 +79,11 @@ falling back to `~/.hermes/.env`) and never prints the key.
 
 - `~$X.XX` is a per-session *estimate*, not the account total.
 - `hermes update` / `git pull` overwrites the patched file — reapply the patch afterwards.
+  If you also run the system-metrics row (`../sysmetrics/`), apply **this patch first,
+  then `sysmetrics.patch`**.
 - Balance can lag the platform panel by up to ~5 min (the panel's own stated delay).
+- This patch file was regenerated 2026-10-30 against HEAD `bf0203a794`. If `git apply`
+  fails after a future update, regenerate with `git diff` from the checkout.
 
 ## Mapping to the DeepSeek Usage page
 

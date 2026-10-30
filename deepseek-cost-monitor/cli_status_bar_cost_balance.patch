@@ -1,5 +1,5 @@
 diff --git a/hermes_cli/cli_status_bar_mixin.py b/hermes_cli/cli_status_bar_mixin.py
-index 67aac0e126..ab993e7fd1 100644
+index 14dbe60293..d671afd8cd 100644
 --- a/hermes_cli/cli_status_bar_mixin.py
 +++ b/hermes_cli/cli_status_bar_mixin.py
 @@ -24,6 +24,7 @@ _AGENT_COUNTERS = (
@@ -21,7 +21,7 @@ index 67aac0e126..ab993e7fd1 100644
  
          try:
              from hermes_cli.focus_view import focus_statusbar_segment
-@@ -301,6 +304,13 @@ class CLIStatusBarMixin:
+@@ -296,6 +299,13 @@ class CLIStatusBarMixin:
          for key in _AGENT_COUNTERS:
              snapshot[key] = getattr(agent, key, 0) or 0
  
