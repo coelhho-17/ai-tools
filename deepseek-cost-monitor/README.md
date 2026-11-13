@@ -82,8 +82,11 @@ falling back to `~/.hermes/.env`) and never prints the key.
   If you also run the system-metrics row (`../sysmetrics/`), apply **this patch first,
   then `sysmetrics.patch`**.
 - Balance can lag the platform panel by up to ~5 min (the panel's own stated delay).
-- This patch file was regenerated 2026-10-30 against HEAD `bf0203a794`. If `git apply`
-  fails after a future update, regenerate with `git diff` from the checkout.
+- This patch was regenerated 2026-11-13 against HEAD `3b421578`. It now touches four
+  files — `hermes_cli/cli_status_bar_mixin.py`, `hermes_cli/gateway_agent.py`,
+  `gateway/session_usage.py` and `tui_gateway/contracts/canonical.py` — so the session
+  cost reaches the CLI through the gateway/TUI path too, not just the direct agent.
+  If `git apply` fails after a future update, regenerate with `git diff` from the checkout.
 
 ## Mapping to the DeepSeek Usage page
 
@@ -95,7 +98,7 @@ falling back to `~/.hermes/.env`) and never prints the key.
 
 ## Files
 
-- `cli_status_bar_cost_balance.patch` — the code patch (`git apply`).
+- `cli_status_bar_cost_balance.patch` — the code patch (`git apply`; touches 4 files).
 - `deepseek-balance` — standalone balance script (optional).
 
 ## Contributing upstream

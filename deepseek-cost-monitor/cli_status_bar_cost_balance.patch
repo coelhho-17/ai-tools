@@ -1,8 +1,6 @@
-diff --git a/hermes_cli/cli_status_bar_mixin.py b/hermes_cli/cli_status_bar_mixin.py
-index 14dbe60293..d671afd8cd 100644
 --- a/hermes_cli/cli_status_bar_mixin.py
 +++ b/hermes_cli/cli_status_bar_mixin.py
-@@ -24,6 +24,7 @@ _AGENT_COUNTERS = (
+@@ -25,6 +25,7 @@
      "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
      "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
      "session_total_tokens", "session_api_calls")
@@ -10,7 +8,7 @@ index 14dbe60293..d671afd8cd 100644
  
  
  def _threshold_style(value, ladder, fallback: str) -> str:
-@@ -232,7 +233,9 @@ class CLIStatusBarMixin:
+@@ -233,7 +234,9 @@
              "git_branch": "",
              "goal_active": False,
              "goal_turns_used": 0,
@@ -21,21 +19,21 @@ index 14dbe60293..d671afd8cd 100644
  
          try:
              from hermes_cli.focus_view import focus_statusbar_segment
-@@ -296,6 +299,13 @@ class CLIStatusBarMixin:
+@@ -296,6 +299,13 @@
+ 
          for key in _AGENT_COUNTERS:
              snapshot[key] = getattr(agent, key, 0) or 0
- 
++
 +        # Session $ cost (estimated). DeepSeek and other providers that don't return a
 +        # billed cost in the API still accumulate an estimate here (see agent.turn_usage).
 +        snapshot["session_estimated_cost_usd"] = float(
 +            getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
 +        snapshot["session_cost_status"] = (
 +            getattr(agent, "session_cost_status", "unknown") or "unknown")
-+
+ 
          compressor = getattr(agent, "context_compressor", None)
          if compressor:
-             # last_prompt_tokens parks at the -1 sentinel right after a compression until the
-@@ -1014,6 +1024,82 @@ class CLIStatusBarMixin:
+@@ -1016,6 +1026,131 @@
          self._status_bar_field_set_cache = result
          return result
  
@@ -79,21 +77,70 @@ index 14dbe60293..d671afd8cd 100644
 +                self._status_bar_balance_fetching = False
 +        return cache[1] if cache is not None else ""
 +
++    def _status_bar_balance_key(self) -> str:
++        """Resolve the DeepSeek API key for the balance fetch, tolerating the credential-pool
++        architecture introduced post-update: ``agent.api_key`` may be empty or a callable token
++        provider, while the real key lives in ``agent._credential_pool``."""
++        agent = getattr(self, "agent", None)
++        if agent is None:
++            return ""
++        key = getattr(agent, "api_key", "")
++        if isinstance(key, str) and key.strip():
++            return key.strip()
++        pool = getattr(agent, "_credential_pool", None)
++        if pool is not None:
++            try:
++                for entry in pool.entries():
++                    rk = getattr(entry, "runtime_api_key", None)
++                    if isinstance(rk, str) and rk.strip():
++                        return rk.strip()
++            except Exception:
++                pass
++        # Final fallback: the DeepSeek key lives in the profile .env (env-seeded pool rows
++        # persist only a fingerprint, so re-hydration depends on this same source). Read it
++        # directly — the standalone deepseek-balance script uses exactly this path.
++        try:
++            from agent.credential_pool import get_env_prefer_dotenv
++            env_key = get_env_prefer_dotenv("DEEPSEEK_API_KEY")
++            if isinstance(env_key, str) and env_key.strip():
++                return env_key.strip()
++        except Exception:
++            pass
++        return ""
++
 +    def _status_bar_balance_fetch(self) -> None:
 +        """Background fetch of the DeepSeek balance; never raises. Failure caches an empty
 +        value too, so a dead network doesn't retry on every render (retries after the TTL)."""
++        import logging
++        _log = logging.getLogger(__name__)
 +        value = ""
++        key = ""
++        err = ""
 +        try:
-+            agent = getattr(self, "agent", None)
-+            key = getattr(agent, "api_key", "") if agent is not None else ""
-+            value = self._status_bar_balance_usd(key) if isinstance(key, str) and key else ""
-+        except Exception:
++            key = self._status_bar_balance_key()
++            value = self._status_bar_balance_usd(key) if key else ""
++        except Exception as _ex:  # noqa: BLE001 - deliberate fail-open
++            err = f"{type(_ex).__name__}: {_ex}"
 +            value = ""
 +        finally:
 +            try:
 +                self._status_bar_balance_cache = (time.monotonic(), value)
 +            finally:
 +                self._status_bar_balance_fetching = False
++            # Mirror the sysmetrics fetch: wake the render loop so the fresh balance paints
++            # even while the prompt is idle (the idle spinner never repaints on a timer).
++            app = getattr(self, "_app", None)
++            if app is not None:
++                try:
++                    app.invalidate()
++                except Exception:
++                    pass
++        _log.info(
++            "deepseek balance fetch: key=%s value=%s%s",
++            f"set(len={len(key)})" if key else "empty",
++            value or "-",
++            f" err={err}" if err else "",
++        )
 +
 +    def _status_bar_balance_usd(self, api_key: str) -> str:
 +        """GET /user/balance for the key, returning a compact ``$X.XX`` label or ""."""
@@ -118,7 +165,7 @@ index 14dbe60293..d671afd8cd 100644
      def _status_bar_segments(
          self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
          """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
-@@ -1045,6 +1131,21 @@ class CLIStatusBarMixin:
+@@ -1047,6 +1182,21 @@
              else:
                  segs.append([("", f"☤ {model_short}")])
          narrow, wide = width < 52, width >= 76
@@ -140,3 +187,55 @@ index 14dbe60293..d671afd8cd 100644
          if narrow:
              # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
              add("duration", _DIM, duration_label)
+--- a/hermes_cli/gateway_agent.py
++++ b/hermes_cli/gateway_agent.py
+@@ -500,6 +500,14 @@
+             value = usage.get(key)
+             if isinstance(value, int) and not isinstance(value, bool):
+                 setattr(self, attr, value)
++        # Session cost is projected separately from the int token counters (it is a float, and a
++        # str status). Without this the status bar's ``~$cost`` segment always reads 0.0 on the
++        # gateway-backed CLI: the gateway owns the cost, this process only mirrors it.
++        cost = usage.get("estimated_cost_usd")
++        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
++            self.session_estimated_cost_usd = float(cost)
++        if isinstance(usage.get("cost_status"), str):
++            self.session_cost_status = usage["cost_status"]
+         compressor = self.context_compressor
+         if isinstance(usage.get("last_prompt_tokens"), int):
+             compressor.last_prompt_tokens = usage["last_prompt_tokens"]
+@@ -547,6 +555,8 @@
+         """Zero the per-session figures main's bar, spinner and /usage read (context length stays)."""
+         for attr in _COUNTER_FROM_USAGE:
+             setattr(self, attr, 0)
++        self.session_estimated_cost_usd = 0.0
++        self.session_cost_status = "unknown"
+         compressor = self.context_compressor
+         compressor.last_prompt_tokens, compressor.last_real_prompt_tokens, compressor.compression_count = 0, None, 0
+         self._context_tokens = self._turn_calls_base = 0
+--- a/gateway/session_usage.py
++++ b/gateway/session_usage.py
+@@ -78,6 +78,12 @@
+ def usage_stats(agent) -> dict:
+     """The frozen ``session.usage`` / ``session.stats`` dict; zeros before the first turn built an agent."""
+     stats: dict = {key: int(getattr(agent, attr, 0) or 0) for key, attr in _COUNTERS}
++    # Session cost is a float + status string, not an int token counter, so it is projected
++    # separately from ``_COUNTERS`` (whose int() cast would truncate $0.13 to $0). The CLI's
++    # status-bar ``~$cost`` segment depends on this: without it the gateway-backed CLI always
++    # reads 0.0 and never renders the per-session cost.
++    stats["estimated_cost_usd"] = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
++    stats["cost_status"] = getattr(agent, "session_cost_status", "unknown") or "unknown"
+     stats.update(_context(agent, getattr(agent, "context_compressor", None)))
+     avg_latency = tps = None
+     with contextlib.suppress(Exception):
+--- a/tui_gateway/contracts/canonical.py
++++ b/tui_gateway/contracts/canonical.py
+@@ -239,6 +239,8 @@
+     total_tokens: int
+     reasoning_tokens: int
+     api_calls: int
++    estimated_cost_usd: float = 0.0
++    cost_status: str = "unknown"
+     last_prompt_tokens: int
+     context_tokens: int
+     context_length: int | None = None

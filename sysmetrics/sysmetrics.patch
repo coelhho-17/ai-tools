@@ -1,8 +1,6 @@
-diff --git a/hermes_cli/cli_status_bar_mixin.py b/hermes_cli/cli_status_bar_mixin.py
-index d671afd8cd..233337fbf4 100644
 --- a/hermes_cli/cli_status_bar_mixin.py
 +++ b/hermes_cli/cli_status_bar_mixin.py
-@@ -25,6 +25,7 @@ _AGENT_COUNTERS = (
+@@ -26,6 +26,7 @@
      "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
      "session_total_tokens", "session_api_calls")
  _BALANCE_TTL_SECONDS = 300  # DeepSeek balance: refresh interval (fetch runs off the render loop)
@@ -10,10 +8,11 @@ index d671afd8cd..233337fbf4 100644
  
  
  def _threshold_style(value, ladder, fallback: str) -> str:
-@@ -1100,6 +1101,111 @@ class CLIStatusBarMixin:
+@@ -1150,6 +1151,111 @@
+                 continue
              return f"${total:.2f}"
          return ""
- 
++
 +    # ── system metrics (CPU / RAM / GPU / DISK / NET) ─────────────────────────
 +
 +    def _status_bar_sysmetrics_enabled(self) -> bool:
@@ -118,11 +117,10 @@ index d671afd8cd..233337fbf4 100644
 +            plain = "".join(text for _, text in frags)
 +            return [(_DIM, " "), (_DIM, self._trim_status_bar_text(plain[1:], width - 1))]
 +        return frags
-+
+ 
      def _status_bar_segments(
          self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
-         """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
-@@ -1232,6 +1338,20 @@ class CLIStatusBarMixin:
+@@ -1284,6 +1390,20 @@
              return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
  
      def _get_status_bar_fragments(self):
@@ -143,11 +141,9 @@ index d671afd8cd..233337fbf4 100644
          if (
              not self._status_bar_visible
              or getattr(self, "_model_picker_state", None)
-diff --git a/hermes_cli/cli_tui_mixin.py b/hermes_cli/cli_tui_mixin.py
-index 2fd80416f4..d43fb18618 100644
 --- a/hermes_cli/cli_tui_mixin.py
 +++ b/hermes_cli/cli_tui_mixin.py
-@@ -2148,7 +2148,9 @@ class CLITuiMixin:
+@@ -2146,7 +2146,9 @@
          status_bar = ConditionalContainer(
              Window(
                  content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
@@ -158,12 +154,9 @@ index 2fd80416f4..d43fb18618 100644
                  # wrap_lines=False: fragments overflowing the width must never wrap onto a second
                  # row (looked like a duplicated status bar on long SSH sessions with stale
                  # shutil sizes). _get_status_bar_fragments reads prompt_toolkit's own width, so
-diff --git a/hermes_cli/status_bar_sysmetrics.py b/hermes_cli/status_bar_sysmetrics.py
-new file mode 100644
-index 0000000000..a72affe441
 --- /dev/null
 +++ b/hermes_cli/status_bar_sysmetrics.py
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,124 @@
 +"""Windows system-metrics collector for the CLI status bar (CPU / RAM / GPU / DISK / NET).
 +
 +A single PowerShell (WMI) subprocess gathers every metric in one shot (~2-3s),
@@ -188,10 +181,37 @@ index 0000000000..a72affe441
 +_PS_SCRIPT = r"""
 +$ErrorActionPreference = "SilentlyContinue"
 +
-+$cpu = (Get-CimInstance Win32_Processor).LoadPercentage
++# --- CPU + network: average of 2 samples ~900ms apart so the gauge tracks
++# Task Manager's ~1s window instead of a single instantaneous (jittery) reading.
++# CPU uses "% Processor Utility" (Win32_PerfFormattedData_Counters_ProcessorInformation),
++# the SAME counter Task Manager's "CPU" gauge reads on Windows 8+. Win32_Processor's
++# LoadPercentage is "% Processor Time", which over-reports on frequency-scaled CPUs
++# (25%+ while Task Manager shows ~5%) because it counts nominal busy time, not utility. ---
++$cpu1 = (Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter 'Name = "_Total"').PercentProcessorUtility
++$nics1 = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Where-Object { $_.Name -notmatch 'Loopback|isatap|Teredo|Bluetooth|Pseudo' }
++$rx1 = 0; $tx1 = 0
++if ($nics1) {
++    $rx1 = [math]::Round(($nics1 | Measure-Object -Property BytesReceivedPerSec -Sum).Sum, 0)
++    $tx1 = [math]::Round(($nics1 | Measure-Object -Property BytesSentPerSec -Sum).Sum, 0)
++}
++Start-Sleep -Milliseconds 900
++$cpu2 = (Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter 'Name = "_Total"').PercentProcessorUtility
++$nics2 = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Where-Object { $_.Name -notmatch 'Loopback|isatap|Teredo|Bluetooth|Pseudo' }
++$rx2 = 0; $tx2 = 0
++if ($nics2) {
++    $rx2 = [math]::Round(($nics2 | Measure-Object -Property BytesReceivedPerSec -Sum).Sum, 0)
++    $tx2 = [math]::Round(($nics2 | Measure-Object -Property BytesSentPerSec -Sum).Sum, 0)
++}
++$cpu = [math]::Round(($cpu1 + $cpu2) / 2, 0)
++$rx = [math]::Round(($rx1 + $rx2) / 2, 0)
++$tx = [math]::Round(($tx1 + $tx2) / 2, 0)
 +
++# --- RAM: "in use" = Total - Available (Available = standby + free), matching
++# Task Manager's "Em uso". FreePhysicalMemory alone under-reports standby/cache. ---
 +$os = Get-CimInstance Win32_OperatingSystem
-+$ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0)
++$mem = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
++$availKb = $mem.AvailableBytes / 1024
++$ram = [math]::Round((($os.TotalVisibleMemorySize - $availKb) / $os.TotalVisibleMemorySize) * 100, 0)
 +
 +$disk = 0
 +$diskIdle = (Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter 'Name = "C:"').PercentIdleTime
@@ -199,13 +219,12 @@ index 0000000000..a72affe441
 +
 +$gpu = ""
 +$eng = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction SilentlyContinue
-+if ($eng) { $gpu = [math]::Round(($eng | Measure-Object -Property UtilizationPercentage -Maximum).Maximum, 0) }
-+
-+$nics = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Where-Object { $_.Name -notmatch 'Loopback|isatap|Teredo|Bluetooth|Pseudo' }
-+$rx = 0; $tx = 0
-+if ($nics) {
-+    $rx = [math]::Round(($nics | Measure-Object -Property BytesReceivedPerSec -Sum).Sum, 0)
-+    $tx = [math]::Round(($nics | Measure-Object -Property BytesSentPerSec -Sum).Sum, 0)
++if ($eng) {
++    # Task Manager's main "GPU %" gauge tracks the 3D/graphics engine, not the
++    # auxiliary Copy/VideoDecode/VideoEncode engines (those get their own sub-graphs).
++    $eng3d = $eng | Where-Object { $_.Name -like '*engtype_3D' }
++    if ($eng3d) { $eng = $eng3d }
++    $gpu = [math]::Round(($eng | Measure-Object -Property UtilizationPercentage -Maximum).Maximum, 0)
 +}
 +
 +Write-Output ("cpu=" + $cpu)
