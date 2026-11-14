@@ -10,6 +10,9 @@ CPU 8% · RAM 32% · GPU 0% · DISK 5% · E:0 R:120 Kbps
 - `E:` (enviado / upload) and `R:` (recebido / download) — network throughput in Kbps, rolling to Mbps above ~1 Mbps. Matches Task Manager's "Enviar / Receber" columns.
 - The row lives under the existing status bar (classic) or footer (modern layout), so it sits right below the cost/quota line from `deepseek-cost-monitor`.
 
+<img width="1252" height="57" alt="image" src="https://github.com/user-attachments/assets/80b3dd44-9154-4866-9618-3dd63fb6a3d5" />
+
+
 ## Behavior
 
 - One PowerShell (WMI) subprocess collects every metric in a single shot (~2-3 s) in a
