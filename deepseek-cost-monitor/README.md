@@ -86,7 +86,9 @@ falling back to `~/.hermes/.env`) and never prints the key.
   files — `hermes_cli/cli_status_bar_mixin.py`, `hermes_cli/gateway_agent.py`,
   `gateway/session_usage.py` and `tui_gateway/contracts/canonical.py` — so the session
   cost reaches the CLI through the gateway/TUI path too, not just the direct agent.
-  If `git apply` fails after a future update, regenerate with `git diff` from the checkout.
+  Verified to apply cleanly against upstream HEAD `882cbc99e4` (the patched files are
+  unchanged across `3b421578..882cbc99e4`). If `git apply` fails after a future update,
+  regenerate with `git diff` from the checkout.
 
 ## Mapping to the DeepSeek Usage page
 

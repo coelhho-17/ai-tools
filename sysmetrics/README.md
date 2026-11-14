@@ -59,4 +59,4 @@ hermes config set display.sysmetrics false
 ## Files
 
 - `sysmetrics.patch` — the code patch (`git apply`, after the cost patch). Regenerated
-  2026-11-13 against HEAD `3b421578`.
+  2026-11-13 against HEAD `3b421578`; verified clean against upstream `882cbc99e4`.
